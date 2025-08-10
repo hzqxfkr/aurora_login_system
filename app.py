@@ -100,7 +100,7 @@ def login():
                 "username": row["username"],
                 "role": row["role"],
                 "iat": datetime.utcnow(),
-                "exp": datetime.utcnow() + timedelta(hours=1)
+                "exp": datetime.utcnow() + timedelta(minutes=10)  # was hours=1
             }
             token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
