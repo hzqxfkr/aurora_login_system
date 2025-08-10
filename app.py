@@ -96,7 +96,7 @@ def login():
 
             # JWT valid for 1 hour
             payload = {
-                "sub": row["id"],
+                "sub": str(row["id"]),  # must be string
                 "username": row["username"],
                 "role": row["role"],
                 "iat": datetime.utcnow(),
