@@ -5,15 +5,16 @@ from datetime import datetime, timedelta
 from flask import Flask, g, render_template, request, redirect, url_for, session, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 import jwt
-from flask_cors import CORS
+CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=True)
+
 
 # -------------------------
 # Configuration (change for production)
 # -------------------------
 app = Flask(__name__, template_folder="templates", static_folder="static")
-app.secret_key = os.environ.get("FLASK_SECRET", "dev-secret-change-me")   # change in prod
-JWT_SECRET = os.environ.get("JWT_SECRET", "jwt-secret-change-me")        # change in prod
-WIX_REDIRECT_URL = os.environ.get("WIX_SITE", "https://your-wix-site.com")  # update to your Wix site URL
+app.secret_key = os.environ.get("FLASK_SECRET", "FLASK_SECRET")   # change in prod
+JWT_SECRET = os.environ.get("JWT_SECRET", "JWT-SECRET")        # change in prod
+WIX_REDIRECT_URL = os.environ.get("WIX_SITE", "https://haziqfakhri21.wixsite.com/aurora-mind-verse--1")  # update to your Wix site URL
 TEACHER_REG_CODE = os.environ.get("TEACHER_REG_CODE", "letmein123")      # simple gate for teacher reg
 CORS(app, resources={r"/api/*": {"origins": os.environ.get("WIX_ORIGIN", "*")}}, supports_credentials=True)
 
@@ -78,7 +79,7 @@ def register():
             return render_template("register.html", error="Username already exists.")
     return render_template("register.html")
 
-@app.route("/login", methods=["GET","POST"])
+@app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
         username = request.form["username"].strip()
@@ -91,20 +92,23 @@ def login():
             session["user_id"] = row["id"]
             session["username"] = row["username"]
             session["role"] = row["role"]
-            # create short-lived JWT used for cross-site verification (2 minutes)
+
+            # create short-lived JWT used for cross-site verification (30 minutes)
             payload = {
                 "sub": row["id"],
                 "username": row["username"],
                 "role": row["role"],
                 "iat": datetime.utcnow(),
-                "exp": datetime.utcnow() + timedelta(minutes=2)
+                "exp": datetime.utcnow() + timedelta(minutes=30)  # <-- extended from 2 to 30
             }
             token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
-            # redirect to wix site with token in query param
+
+            # Always redirect to Wix site with token in URL
             redirect_url = f"{next_url.rstrip('/')}/?token={token}"
             return redirect(redirect_url)
+
         return render_template("login.html", error="Wrong username or password.")
-    return render_template("login.html", next=request.args.get("next",""))
+    return render_template("login.html", next=request.args.get("next", ""))
 
 @app.route("/dashboard")
 def dashboard():
