@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from flask import Flask, g, render_template, request, redirect, url_for, session, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 import jwt
+from flask_cors import CORS
 CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=True)
 
 
