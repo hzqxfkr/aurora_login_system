@@ -88,27 +88,28 @@ def login():
         db = get_db()
         row = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
         if row and check_password_hash(row["password"], password):
-            # create server-side session (optional)
+            # create server-side session
             session["user_id"] = row["id"]
             session["username"] = row["username"]
             session["role"] = row["role"]
 
-            # create short-lived JWT used for cross-site verification (30 minutes)
+            # JWT valid for 1 hour
             payload = {
                 "sub": row["id"],
                 "username": row["username"],
                 "role": row["role"],
                 "iat": datetime.utcnow(),
-                "exp": datetime.utcnow() + timedelta(minutes=30)  # <-- extended from 2 to 30
+                "exp": datetime.utcnow() + timedelta(hours=1)  # was minutes=2
             }
             token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
-            # Always redirect to Wix site with token in URL
+            # Redirect to Wix with token in URL
             redirect_url = f"{next_url.rstrip('/')}/?token={token}"
             return redirect(redirect_url)
 
         return render_template("login.html", error="Wrong username or password.")
     return render_template("login.html", next=request.args.get("next", ""))
+
 
 @app.route("/dashboard")
 def dashboard():
