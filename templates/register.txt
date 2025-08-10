@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Register</title></head>
+<body>
+  <h2>Register</h2>
+  {% if error %}<p style="color:red">{{ error }}</p>{% endif %}
+  <form method="post">
+    <input name="username" placeholder="Username" required><br>
+    <input name="password" type="password" placeholder="Password" required><br>
+    <label>Role:
+      <select name="role">
+        <option value="student">Student</option>
+        <option value="teacher">Teacher</option>
+      </select>
+    </label><br>
+    <input name="teacher_code" placeholder="Teacher code (only if teacher)"><br>
+    <button type="submit">Register</button>
+  </form>
+  <p>Already registered? <a href="{{ url_for('login') }}">Login</a></p>
+</body>
+</html>
