@@ -5,18 +5,18 @@ from datetime import datetime, timedelta
 from flask import Flask, g, render_template, request, redirect, url_for, session, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 import jwt
-from flask_cors import CORS
-CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=True)
-
+from flask_cors import CORS  # <-- import here
 
 # -------------------------
 # Configuration (change for production)
 # -------------------------
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.secret_key = os.environ.get("FLASK_SECRET", "FLASK_SECRET")   # change in prod
-JWT_SECRET = os.environ.get("JWT_SECRET", "JWT-SECRET")        # change in prod
+JWT_SECRET = os.environ.get("JWT_SECRET", "JWT-SECRET")           # change in prod
 WIX_REDIRECT_URL = os.environ.get("WIX_SITE", "https://haziqfakhri21.wixsite.com/aurora-mind-verse--1")  # update to your Wix site URL
-TEACHER_REG_CODE = os.environ.get("TEACHER_REG_CODE", "letmein123")      # simple gate for teacher reg
+TEACHER_REG_CODE = os.environ.get("TEACHER_REG_CODE", "letmein123")  # simple gate for teacher reg
+
+# Enable CORS for Wix API calls
 CORS(app, resources={r"/api/*": {"origins": os.environ.get("WIX_ORIGIN", "*")}}, supports_credentials=True)
 
 DATABASE = os.path.join(os.path.dirname(__file__), "aurora.db")
@@ -100,7 +100,7 @@ def login():
                 "username": row["username"],
                 "role": row["role"],
                 "iat": datetime.utcnow(),
-                "exp": datetime.utcnow() + timedelta(hours=1)  # was minutes=2
+                "exp": datetime.utcnow() + timedelta(hours=1)
             }
             token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
@@ -110,7 +110,6 @@ def login():
 
         return render_template("login.html", error="Wrong username or password.")
     return render_template("login.html", next=request.args.get("next", ""))
-
 
 @app.route("/dashboard")
 def dashboard():
@@ -130,7 +129,6 @@ def logout():
 # -------------------------
 @app.route("/api/validate_token", methods=["GET"])
 def api_validate_token():
-    # Accept ?token=... or Authorization: Bearer <token>
     token = request.args.get("token") or request.headers.get("Authorization", "").replace("Bearer ", "")
     if not token:
         return jsonify({"valid": False, "reason": "no_token"}), 400
@@ -140,7 +138,6 @@ def api_validate_token():
         return jsonify({"valid": False, "reason": "expired"}), 401
     except Exception as e:
         return jsonify({"valid": False, "reason": "invalid", "error": str(e)}), 400
-    # verify user exists
     db = get_db()
     row = db.execute("SELECT id, username, role FROM users WHERE id = ?", (payload["sub"],)).fetchone()
     if not row:
