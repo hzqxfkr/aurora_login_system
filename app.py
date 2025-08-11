@@ -18,7 +18,10 @@ TEACHER_REG_CODE = os.environ.get("TEACHER_REG_CODE", "letmein123")
 # Allow CORS for Wix
 CORS(app, resources={r"/api/*": {"origins": os.environ.get("WIX_ORIGIN", "*")}}, supports_credentials=True)
 
-DATABASE = os.path.join(os.path.dirname(__file__), "aurora.db")
+DATABASE = os.environ.get(
+    "DATABASE_PATH",
+    os.path.join(os.path.dirname(__file__), "aurora.db")
+)
 
 # -------------------------
 # Database helpers
