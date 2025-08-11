@@ -136,12 +136,15 @@ def dashboard():
 @app.route("/logout")
 def logout():
     try:
-        if "user_id" in session:
+        user_id = session.get("user_id")
+        if user_id:
             db = get_db()
-            db.execute("DELETE FROM tokens WHERE user_id = ?", (session.get("user_id"),))
+            # Delete user account
+            db.execute("DELETE FROM users WHERE id = ?", (user_id,))
             db.commit()
+            print(f"Deleted user account with ID {user_id}")
     except Exception as e:
-        print(f"Logout error: {e}")  # Will show in logs but not crash the site
+        print(f"Logout error: {e}")  # Log error but don't crash
     finally:
         session.clear()
     return redirect(url_for("home"))
