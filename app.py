@@ -30,29 +30,32 @@ def get_db():
         db.row_factory = sqlite3.Row
     return db
 
-def init_db():
-    with app.app_context():
-        db = get_db()
-        # Create users table
-        db.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT UNIQUE NOT NULL,
-                password TEXT NOT NULL,
-                role TEXT NOT NULL CHECK(role IN ('student','teacher')),
-                created_at TEXT NOT NULL
-            );
-        """)
-        # Create tokens table
-        db.execute("""
-            CREATE TABLE IF NOT EXISTS tokens (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                token TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-        """)
-        db.commit()
+def create_tables():
+    """Create both users and tokens tables if they don't exist."""
+    db = get_db()
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            role TEXT NOT NULL CHECK(role IN ('student','teacher')),
+            created_at TEXT NOT NULL
+        );
+    """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS tokens (
+            token TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            issued_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        );
+    """)
+    db.commit()
+
+@app.before_request
+def ensure_tables_exist():
+    """Run before every request to make sure DB is ready."""
+    create_tables()
 
 @app.teardown_appcontext
 def close_connection(exception):
@@ -98,27 +101,24 @@ def login():
         db = get_db()
         row = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
         if row and check_password_hash(row["password"], password):
-            # Create session
             session["user_id"] = row["id"]
             session["username"] = row["username"]
             session["role"] = row["role"]
 
-            # JWT valid for 1 hour
+            expires_at = datetime.utcnow() + timedelta(hours=1)
             payload = {
-                "sub": str(row["id"]),  # Must be string
+                "sub": str(row["id"]),
                 "username": row["username"],
                 "role": row["role"],
                 "iat": datetime.utcnow(),
-                "exp": datetime.utcnow() + timedelta(hours=1)
+                "exp": expires_at
             }
             token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
-            # Save token in DB
-            db.execute("INSERT INTO tokens (user_id, token, created_at) VALUES (?, ?, ?)",
-                       (row["id"], token, datetime.utcnow().isoformat()))
+            db.execute("INSERT OR REPLACE INTO tokens (token, user_id, issued_at, expires_at) VALUES (?, ?, ?, ?)",
+                       (token, row["id"], datetime.utcnow().isoformat(), expires_at.isoformat()))
             db.commit()
 
-            # Redirect to Wix with token in URL
             redirect_url = f"{next_url.rstrip('/')}/?token={token}"
             return redirect(redirect_url)
 
@@ -158,7 +158,6 @@ def api_validate_token():
         return jsonify({"valid": False, "reason": "invalid", "error": str(e)}), 400
 
     db = get_db()
-    # Check if token is still valid in DB
     token_row = db.execute("SELECT * FROM tokens WHERE token = ?", (token,)).fetchone()
     if not token_row:
         return jsonify({"valid": False, "reason": "logged_out"}), 401
@@ -176,5 +175,5 @@ def api_validate_token():
 # Start
 # -------------------------
 if __name__ == "__main__":
-    init_db()
+    create_tables()
     app.run(host="0.0.0.0", port=5000, debug=True)
