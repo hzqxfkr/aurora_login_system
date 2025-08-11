@@ -1,64 +1,46 @@
 import os
-import sqlite3
 from datetime import datetime, timedelta
 from flask import Flask, g, render_template, request, redirect, url_for, session, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 import jwt
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from flask_cors import CORS
 
 # -------------------------
-# Flask app setup
+# Configuration
 # -------------------------
 app = Flask(__name__, template_folder="templates", static_folder="static")
-app.secret_key = os.environ.get("FLASK_SECRET", "FLASK_SECRET")   # change in prod
-JWT_SECRET = os.environ.get("JWT_SECRET", "JWT-SECRET")           # change in prod
+app.secret_key = os.environ.get("FLASK_SECRET", "FLASK_SECRET")
+JWT_SECRET = os.environ.get("JWT_SECRET", "JWT-SECRET")
 WIX_REDIRECT_URL = os.environ.get("WIX_SITE", "https://haziqfakhri21.wixsite.com/aurora-mind-verse--1")
 TEACHER_REG_CODE = os.environ.get("TEACHER_REG_CODE", "letmein123")
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# Allow CORS for Wix
 CORS(app, resources={r"/api/*": {"origins": os.environ.get("WIX_ORIGIN", "*")}}, supports_credentials=True)
-
-DATABASE = os.environ.get(
-    "DATABASE_PATH",
-    os.path.join(os.path.dirname(__file__), "aurora.db")
-)
 
 # -------------------------
 # Database helpers
 # -------------------------
 def get_db():
-    db = getattr(g, "_database", None)
-    if db is None:
-        db = g._database = sqlite3.connect(DATABASE)
-        db.row_factory = sqlite3.Row
-    return db
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    return conn
 
-def create_tables():
-    """Create both users and tokens tables if they don't exist."""
-    db = get_db()
-    db.execute("""
+def init_db():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             username TEXT UNIQUE NOT NULL,
             password TEXT NOT NULL,
-            role TEXT NOT NULL CHECK(role IN ('student','teacher')),
-            created_at TEXT NOT NULL
+            role TEXT NOT NULL CHECK (role IN ('student','teacher')),
+            created_at TIMESTAMP NOT NULL
         );
     """)
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS tokens (
-            token TEXT PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            issued_at TEXT NOT NULL,
-            expires_at TEXT NOT NULL
-        );
-    """)
-    db.commit()
-
-@app.before_request
-def ensure_tables_exist():
-    """Run before every request to make sure DB is ready."""
-    create_tables()
+    conn.commit()
+    cur.close()
+    conn.close()
 
 @app.teardown_appcontext
 def close_connection(exception):
@@ -75,24 +57,33 @@ def home():
         return redirect(url_for("dashboard"))
     return render_template("home.html")
 
-@app.route("/register", methods=["GET","POST"])
+@app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "POST":
         username = request.form["username"].strip()
         password = request.form["password"]
         role = request.form["role"]
-        teacher_code = request.form.get("teacher_code","").strip()
+        teacher_code = request.form.get("teacher_code", "").strip()
+
         if role == "teacher" and teacher_code != TEACHER_REG_CODE:
             return render_template("register.html", error="Invalid teacher registration code.")
-        db = get_db()
+
         try:
             pw_hash = generate_password_hash(password)
-            db.execute("INSERT INTO users (username,password,role,created_at) VALUES (?, ?, ?, ?)",
-                       (username, pw_hash, role, datetime.utcnow().isoformat()))
-            db.commit()
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO users (username, password, role, created_at) VALUES (%s, %s, %s, %s)",
+                (username, pw_hash, role, datetime.utcnow())
+            )
+            conn.commit()
+            cur.close()
+            conn.close()
             return redirect(url_for("login"))
-        except sqlite3.IntegrityError:
+        except psycopg2.errors.UniqueViolation:
             return render_template("register.html", error="Username already exists.")
+        except Exception as e:
+            return render_template("register.html", error=str(e))
     return render_template("register.html")
 
 @app.route("/login", methods=["GET", "POST"])
@@ -101,27 +92,27 @@ def login():
         username = request.form["username"].strip()
         password = request.form["password"]
         next_url = request.form.get("next") or request.args.get("next") or WIX_REDIRECT_URL
-        db = get_db()
-        row = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM users WHERE username = %s", (username,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+
         if row and check_password_hash(row["password"], password):
             session["user_id"] = row["id"]
             session["username"] = row["username"]
             session["role"] = row["role"]
 
-            expires_at = datetime.utcnow() + timedelta(hours=1)
             payload = {
-                "sub": str(row["id"]),
+                "sub": str(row["id"]),  # sub must be string for JWT
                 "username": row["username"],
                 "role": row["role"],
                 "iat": datetime.utcnow(),
-                "exp": expires_at
+                "exp": datetime.utcnow() + timedelta(hours=1)
             }
             token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
-
-            db.execute("INSERT OR REPLACE INTO tokens (token, user_id, issued_at, expires_at) VALUES (?, ?, ?, ?)",
-                       (token, row["id"], datetime.utcnow().isoformat(), expires_at.isoformat()))
-            db.commit()
-
             redirect_url = f"{next_url.rstrip('/')}/?token={token}"
             return redirect(redirect_url)
 
@@ -138,20 +129,8 @@ def dashboard():
 
 @app.route("/logout")
 def logout():
-    try:
-        user_id = session.get("user_id")
-        if user_id:
-            db = get_db()
-            # Delete user account
-            db.execute("DELETE FROM users WHERE id = ?", (user_id,))
-            db.commit()
-            print(f"Deleted user account with ID {user_id}")
-    except Exception as e:
-        print(f"Logout error: {e}")  # Log error but don't crash
-    finally:
-        session.clear()
+    session.clear()
     return redirect(url_for("home"))
-
 
 # -------------------------
 # API endpoint for Wix
@@ -168,12 +147,13 @@ def api_validate_token():
     except Exception as e:
         return jsonify({"valid": False, "reason": "invalid", "error": str(e)}), 400
 
-    db = get_db()
-    token_row = db.execute("SELECT * FROM tokens WHERE token = ?", (token,)).fetchone()
-    if not token_row:
-        return jsonify({"valid": False, "reason": "logged_out"}), 401
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT id, username, role FROM users WHERE id = %s", (payload["sub"],))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
 
-    row = db.execute("SELECT id, username, role FROM users WHERE id = ?", (payload["sub"],)).fetchone()
     if not row:
         return jsonify({"valid": False, "reason": "user_not_found"}), 404
 
@@ -186,5 +166,5 @@ def api_validate_token():
 # Start
 # -------------------------
 if __name__ == "__main__":
-    create_tables()
+    init_db()
     app.run(host="0.0.0.0", port=5000, debug=True)
