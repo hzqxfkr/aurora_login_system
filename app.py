@@ -1,11 +1,16 @@
+# app.py
 import os
 from datetime import datetime, timedelta
 from flask import Flask, g, render_template, request, redirect, url_for, session, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 import jwt
+from flask_cors import CORS
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from flask_cors import CORS
+from dotenv import load_dotenv
+
+# Load .env for local
+load_dotenv()
 
 # -------------------------
 # Configuration
@@ -15,15 +20,25 @@ app.secret_key = os.environ.get("FLASK_SECRET", "FLASK_SECRET")
 JWT_SECRET = os.environ.get("JWT_SECRET", "JWT-SECRET")
 WIX_REDIRECT_URL = os.environ.get("WIX_SITE", "https://haziqfakhri21.wixsite.com/aurora-mind-verse--1")
 TEACHER_REG_CODE = os.environ.get("TEACHER_REG_CODE", "letmein123")
-DATABASE_URL = os.environ.get("DATABASE_URL")
 
 CORS(app, resources={r"/api/*": {"origins": os.environ.get("WIX_ORIGIN", "*")}}, supports_credentials=True)
+
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 # -------------------------
 # Database helpers
 # -------------------------
 def get_db():
-    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    db_url = DATABASE_URL
+
+    # Force SSL for Render Postgres
+    if db_url and "sslmode" not in db_url:
+        if "?" in db_url:
+            db_url += "&sslmode=require"
+        else:
+            db_url += "?sslmode=require"
+
+    conn = psycopg2.connect(db_url, cursor_factory=RealDictCursor)
     return conn
 
 def init_db():
@@ -34,19 +49,13 @@ def init_db():
             id SERIAL PRIMARY KEY,
             username TEXT UNIQUE NOT NULL,
             password TEXT NOT NULL,
-            role TEXT NOT NULL CHECK (role IN ('student','teacher')),
+            role TEXT NOT NULL CHECK(role IN ('student', 'teacher')),
             created_at TIMESTAMP NOT NULL
         );
     """)
     conn.commit()
     cur.close()
     conn.close()
-
-@app.teardown_appcontext
-def close_connection(exception):
-    db = getattr(g, "_database", None)
-    if db is not None:
-        db.close()
 
 # -------------------------
 # Routes
@@ -57,33 +66,34 @@ def home():
         return redirect(url_for("dashboard"))
     return render_template("home.html")
 
-@app.route("/register", methods=["GET", "POST"])
+@app.route("/register", methods=["GET","POST"])
 def register():
     if request.method == "POST":
         username = request.form["username"].strip()
         password = request.form["password"]
         role = request.form["role"]
-        teacher_code = request.form.get("teacher_code", "").strip()
+        teacher_code = request.form.get("teacher_code","").strip()
 
         if role == "teacher" and teacher_code != TEACHER_REG_CODE:
             return render_template("register.html", error="Invalid teacher registration code.")
 
+        conn = get_db()
+        cur = conn.cursor()
+
         try:
             pw_hash = generate_password_hash(password)
-            conn = get_db()
-            cur = conn.cursor()
             cur.execute(
-                "INSERT INTO users (username, password, role, created_at) VALUES (%s, %s, %s, %s)",
+                "INSERT INTO users (username,password,role,created_at) VALUES (%s, %s, %s, %s)",
                 (username, pw_hash, role, datetime.utcnow())
             )
             conn.commit()
             cur.close()
             conn.close()
             return redirect(url_for("login"))
-        except psycopg2.errors.UniqueViolation:
+        except psycopg2.Error:
+            cur.close()
+            conn.close()
             return render_template("register.html", error="Username already exists.")
-        except Exception as e:
-            return render_template("register.html", error=str(e))
     return render_template("register.html")
 
 @app.route("/login", methods=["GET", "POST"])
@@ -101,18 +111,22 @@ def login():
         conn.close()
 
         if row and check_password_hash(row["password"], password):
+            # Session
             session["user_id"] = row["id"]
             session["username"] = row["username"]
             session["role"] = row["role"]
 
+            # JWT token (10 min)
             payload = {
-                "sub": str(row["id"]),  # sub must be string for JWT
+                "sub": str(row["id"]),  # must be string for PyJWT
                 "username": row["username"],
                 "role": row["role"],
                 "iat": datetime.utcnow(),
-                "exp": datetime.utcnow() + timedelta(hours=1)
+                "exp": datetime.utcnow() + timedelta(minutes=10)
             }
             token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+
+            # Redirect to Wix
             redirect_url = f"{next_url.rstrip('/')}/?token={token}"
             return redirect(redirect_url)
 
@@ -133,7 +147,7 @@ def logout():
     return redirect(url_for("home"))
 
 # -------------------------
-# API endpoint for Wix
+# API for Wix to validate token
 # -------------------------
 @app.route("/api/validate_token", methods=["GET"])
 def api_validate_token():
@@ -157,10 +171,7 @@ def api_validate_token():
     if not row:
         return jsonify({"valid": False, "reason": "user_not_found"}), 404
 
-    return jsonify({
-        "valid": True,
-        "user": {"id": row["id"], "username": row["username"], "role": row["role"]}
-    })
+    return jsonify({"valid": True, "user": row})
 
 # -------------------------
 # Start
