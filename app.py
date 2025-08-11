@@ -1,4 +1,3 @@
-# app.py
 import os
 import sqlite3
 from datetime import datetime, timedelta
@@ -8,13 +7,15 @@ import jwt
 from flask_cors import CORS
 
 # -------------------------
-# Configuration
+# Flask app setup
 # -------------------------
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.secret_key = os.environ.get("FLASK_SECRET", "FLASK_SECRET")   # change in prod
 JWT_SECRET = os.environ.get("JWT_SECRET", "JWT-SECRET")           # change in prod
 WIX_REDIRECT_URL = os.environ.get("WIX_SITE", "https://haziqfakhri21.wixsite.com/aurora-mind-verse--1")
 TEACHER_REG_CODE = os.environ.get("TEACHER_REG_CODE", "letmein123")
+
+# Allow CORS for Wix
 CORS(app, resources={r"/api/*": {"origins": os.environ.get("WIX_ORIGIN", "*")}}, supports_credentials=True)
 
 DATABASE = os.path.join(os.path.dirname(__file__), "aurora.db")
@@ -32,6 +33,7 @@ def get_db():
 def init_db():
     with app.app_context():
         db = get_db()
+        # Create users table
         db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,12 +43,13 @@ def init_db():
                 created_at TEXT NOT NULL
             );
         """)
+        # Create tokens table
         db.execute("""
             CREATE TABLE IF NOT EXISTS tokens (
-                token TEXT PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
-                issued_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL
+                token TEXT NOT NULL,
+                created_at TEXT NOT NULL
             );
         """)
         db.commit()
@@ -66,19 +69,19 @@ def home():
         return redirect(url_for("dashboard"))
     return render_template("home.html")
 
-@app.route("/register", methods=["GET", "POST"])
+@app.route("/register", methods=["GET","POST"])
 def register():
     if request.method == "POST":
         username = request.form["username"].strip()
         password = request.form["password"]
         role = request.form["role"]
-        teacher_code = request.form.get("teacher_code", "").strip()
+        teacher_code = request.form.get("teacher_code","").strip()
         if role == "teacher" and teacher_code != TEACHER_REG_CODE:
             return render_template("register.html", error="Invalid teacher registration code.")
         db = get_db()
         try:
             pw_hash = generate_password_hash(password)
-            db.execute("INSERT INTO users (username, password, role, created_at) VALUES (?, ?, ?, ?)",
+            db.execute("INSERT INTO users (username,password,role,created_at) VALUES (?, ?, ?, ?)",
                        (username, pw_hash, role, datetime.utcnow().isoformat()))
             db.commit()
             return redirect(url_for("login"))
@@ -95,25 +98,27 @@ def login():
         db = get_db()
         row = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
         if row and check_password_hash(row["password"], password):
+            # Create session
             session["user_id"] = row["id"]
             session["username"] = row["username"]
             session["role"] = row["role"]
 
-            expires_at = datetime.utcnow() + timedelta(minutes=10)  # 10-minute expiry
+            # JWT valid for 1 hour
             payload = {
-                "sub": str(row["id"]),
+                "sub": str(row["id"]),  # Must be string
                 "username": row["username"],
                 "role": row["role"],
                 "iat": datetime.utcnow(),
-                "exp": expires_at
+                "exp": datetime.utcnow() + timedelta(hours=1)
             }
             token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
-            # Store token in DB (single-use system)
-            db.execute("INSERT INTO tokens (token, user_id, issued_at, expires_at) VALUES (?, ?, ?, ?)",
-                       (token, row["id"], datetime.utcnow().isoformat(), expires_at.isoformat()))
+            # Save token in DB
+            db.execute("INSERT INTO tokens (user_id, token, created_at) VALUES (?, ?, ?)",
+                       (row["id"], token, datetime.utcnow().isoformat()))
             db.commit()
 
+            # Redirect to Wix with token in URL
             redirect_url = f"{next_url.rstrip('/')}/?token={token}"
             return redirect(redirect_url)
 
@@ -130,29 +135,21 @@ def dashboard():
 
 @app.route("/logout")
 def logout():
-    token = request.args.get("token")
-    if token:
+    if "user_id" in session:
         db = get_db()
-        db.execute("DELETE FROM tokens WHERE token = ?", (token,))
+        db.execute("DELETE FROM tokens WHERE user_id = ?", (session["user_id"],))
         db.commit()
     session.clear()
     return redirect(url_for("home"))
 
 # -------------------------
-# API endpoint to validate token
+# API endpoint for Wix
 # -------------------------
 @app.route("/api/validate_token", methods=["GET"])
 def api_validate_token():
-    db = get_db()
-
-    # Auto-clean expired tokens
-    db.execute("DELETE FROM tokens WHERE expires_at < ?", (datetime.utcnow().isoformat(),))
-    db.commit()
-
     token = request.args.get("token") or request.headers.get("Authorization", "").replace("Bearer ", "")
     if not token:
         return jsonify({"valid": False, "reason": "no_token"}), 400
-
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
     except jwt.ExpiredSignatureError:
@@ -160,19 +157,19 @@ def api_validate_token():
     except Exception as e:
         return jsonify({"valid": False, "reason": "invalid", "error": str(e)}), 400
 
-    # Check token exists in DB (single-use check)
-    row_token = db.execute("SELECT * FROM tokens WHERE token = ?", (token,)).fetchone()
-    if not row_token:
-        return jsonify({"valid": False, "reason": "token_not_found"}), 401
+    db = get_db()
+    # Check if token is still valid in DB
+    token_row = db.execute("SELECT * FROM tokens WHERE token = ?", (token,)).fetchone()
+    if not token_row:
+        return jsonify({"valid": False, "reason": "logged_out"}), 401
 
-    # Verify user exists
-    row_user = db.execute("SELECT id, username, role FROM users WHERE id = ?", (payload["sub"],)).fetchone()
-    if not row_user:
+    row = db.execute("SELECT id, username, role FROM users WHERE id = ?", (payload["sub"],)).fetchone()
+    if not row:
         return jsonify({"valid": False, "reason": "user_not_found"}), 404
 
     return jsonify({
         "valid": True,
-        "user": {"id": row_user["id"], "username": row_user["username"], "role": row_user["role"]}
+        "user": {"id": row["id"], "username": row["username"], "role": row["role"]}
     })
 
 # -------------------------
