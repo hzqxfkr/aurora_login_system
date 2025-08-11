@@ -135,12 +135,17 @@ def dashboard():
 
 @app.route("/logout")
 def logout():
-    if "user_id" in session:
-        db = get_db()
-        db.execute("DELETE FROM tokens WHERE user_id = ?", (session["user_id"],))
-        db.commit()
-    session.clear()
+    try:
+        if "user_id" in session:
+            db = get_db()
+            db.execute("DELETE FROM tokens WHERE user_id = ?", (session.get("user_id"),))
+            db.commit()
+    except Exception as e:
+        print(f"Logout error: {e}")  # Will show in logs but not crash the site
+    finally:
+        session.clear()
     return redirect(url_for("home"))
+
 
 # -------------------------
 # API endpoint for Wix
